@@ -21,6 +21,12 @@ struct ThreadData {
 void sigint_handler(int signum) {
     // No hacer nada, simplemente ignorar la señal
 }
+// funcion para leer el index actual
+int read_current_index();
+// funcion para incrementar el index actual
+void increment_current_index(int index);
+// Función para decodificar en Base64
+char* base64_decode(const unsigned char* input, size_t length, size_t* output_length);
 // Función para codificar en Base64
 char* base64_encode(const unsigned char* input, size_t length, size_t* output_length);
 
@@ -126,7 +132,6 @@ int request_handler(void *cls, struct MHD_Connection *connection,
                     DPFPDD_DEV_INFO* pri = (DPFPDD_DEV_INFO*)realloc(pReaderInfo, sizeof(DPFPDD_DEV_INFO) * nNewReaderCnt);
                     if(NULL == pri) {
                         printf("Error en realloc(): ENOMEM");
-                        
                         response = MHD_create_response_from_buffer(strlen("{\"message\": \"Huellero no conectado\", \"type\": \"false\"} "),
                                                             (void *) "{\"message\": \"Huellero no conectado\", \"type\": \"false\"} ",
                                                             MHD_RESPMEM_MUST_COPY);
@@ -198,6 +203,221 @@ int request_handler(void *cls, struct MHD_Connection *connection,
             nReaderCnt = 0;
         }
         
+    }
+
+    if (strcmp(url, "/capture") == 0) {
+        unsigned char* pFeatures1 = NULL;
+	    unsigned int nFeatures1Size = 0;
+        DPFPDD_DEV hReader = NULL;
+        int dpi = 0;
+        int bStop = 0;
+        int result = dpfpdd_init();
+        char szReader[MAX_DEVICE_NAME_LENGTH];
+        sigset_t sigmask;
+        // Configuración de máscara de señales
+        sigfillset(&sigmask);
+        pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
+        // Configuración de localización
+        setlocale(LC_ALL, "");
+        strncpy(szReader, "", sizeof(szReader));
+
+        hReader = SelectAndOpenReader(szReader, sizeof(szReader),&dpi);
+
+        CaptureFinger2("any finger", hReader, dpi,DPFJ_FMD_ISO_19794_2_2005, &pFeatures1, &nFeatures1Size);
+
+        // create bin file for save fingerprint (pFeatures1 and nFeatures1Size)
+        int index = read_current_index();
+
+        char input_file_name[512];
+        sprintf(input_file_name, "fingers/fingerprint_%d.bin", index);
+
+        FILE *f = fopen(input_file_name, "wb");
+        if (f == NULL)
+        {
+            printf("Error opening file!\n");
+            exit(1);
+        }
+
+        fwrite(pFeatures1, sizeof(char), nFeatures1Size, f);
+        fclose(f);
+        increment_current_index(index+1);
+        //content
+        size_t input_length;
+        unsigned char* input_content = read_file(input_file_name, &input_length);
+        size_t encoded_length;
+        char* encoded_content = base64_encode(input_content, input_length, &encoded_length);
+
+        char buffer[512];
+        sprintf(buffer, "{\"message\": \"success\", \"content\":\"%s\", \"index\":\"%d\" }", encoded_content, index);
+        response = MHD_create_response_from_buffer(strlen(buffer),
+                                        (void *) buffer,
+                                        MHD_RESPMEM_MUST_COPY);
+        dpfpdd_exit();
+        MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+        MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type");
+        int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+        MHD_destroy_response(response);
+        return ret;
+    }
+    
+    if (strcmp(url, "/compare") == 0) {
+        // read params of querystring for fingerprint
+        const char *index_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "index");
+        int index = atoi(index_str);
+        char* name[255];
+        sprintf(name, "fingers/fingerprint_%d.bin", index);
+        FILE *f = fopen(name, "w");
+        if (f == NULL)
+        {
+            printf("Error opening file!\n");
+            exit(1);
+        }
+
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);  //same as rewind(f);
+
+        unsigned char *pFeatures2 = malloc(fsize + 1);
+        fread(pFeatures2, fsize, 1, f);
+        fclose(f);
+
+        unsigned char* pFeatures1 = NULL;
+        unsigned int nFeatures1Size = 0;
+        unsigned int nFeatures2Size = 0;
+        DPFPDD_DEV hReader = NULL;
+        int dpi = 0;
+        int bStop = 0;
+        int result = dpfpdd_init();
+        char szReader[MAX_DEVICE_NAME_LENGTH];
+        sigset_t sigmask;
+        // Configuración de máscara de señales
+        sigfillset(&sigmask);
+        pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
+        // Configuración de localización
+        setlocale(LC_ALL, "");
+        strncpy(szReader, "", sizeof(szReader));
+
+        hReader = SelectAndOpenReader(szReader, sizeof(szReader),&dpi);
+
+        CaptureFinger2("any finger", hReader, dpi,DPFJ_FMD_ISO_19794_2_2005, &pFeatures1, &nFeatures1Size);
+
+        unsigned int falsematch_rate = 0;
+        const unsigned int target_falsematch_rate = DPFJ_PROBABILITY_ONE / 100000; //target rate is 0.00001
+        long mseconds;
+        struct timeval tv1, tv2;
+        gettimeofday(&tv1, NULL);
+        int new_result = dpfj_compare(DPFJ_FMD_ISO_19794_2_2005, pFeatures1, nFeatures1Size, 0,
+            DPFJ_FMD_ISO_19794_2_2005, pFeatures2, nFeatures2Size, 0,
+            &falsematch_rate);
+
+        gettimeofday(&tv2, NULL);
+        mseconds = (tv2.tv_sec - tv1.tv_sec) * 1000 + (tv2.tv_usec - tv1.tv_usec) / 1000; //time of operation in milliseconds
+        // show features in console
+        char buffer[512];
+        if(DPFJ_SUCCESS == result){
+            if(falsematch_rate < target_falsematch_rate){
+                printf("Fingerprints match.\n\n\n");
+                sprintf(buffer, "{\"message\": \"%s\", \"type\": \"true\" }", "match");
+            }
+            else{
+                printf("Fingerprints did not match.\n\n\n");
+                sprintf(buffer, "{\"message\": \"%s\", \"type\": \"true\"}", "not match");
+            }
+        }else{
+            sprintf(buffer, "{\"message\": \"%d\", \"type\": \"false\"}", "not connected");
+        }
+
+        response = MHD_create_response_from_buffer(strlen(buffer),
+                                        (void *) buffer,
+                                        MHD_RESPMEM_MUST_COPY);
+        dpfpdd_exit();
+        MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+        MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type");
+        int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+        MHD_destroy_response(response);
+        return ret;
+
+    }
+
+    if (strcmp(url, "/validate") == 0) {
+        const char *index_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "index");
+        int index = atoi(index_str);
+        char name[255];
+        sprintf(name, "fingers/fingerprint_%d.bin", index);
+        // read bin file for fingerprint
+        FILE *f = fopen(name, "rb");
+        if (f == NULL)
+        {
+            printf("Error opening file!\n");
+            exit(1);
+        }
+
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);  //same as rewind(f);
+
+        unsigned char *pFeatures2 = malloc(fsize + 1);
+        fread(pFeatures2, fsize, 1, f);
+        fclose(f);
+
+        unsigned char* pFeatures1 = NULL;
+	    unsigned int nFeatures1Size = 0;
+	    unsigned int nFeatures2Size = 0;
+        DPFPDD_DEV hReader = NULL;
+        int dpi = 0;
+        int bStop = 0;
+        int result = dpfpdd_init();
+        char szReader[MAX_DEVICE_NAME_LENGTH];
+        sigset_t sigmask;
+        // Configuración de máscara de señales
+        sigfillset(&sigmask);
+        pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
+        // Configuración de localización
+        setlocale(LC_ALL, "");
+        strncpy(szReader, "", sizeof(szReader));
+
+        hReader = SelectAndOpenReader(szReader, sizeof(szReader),&dpi);
+
+        CaptureFinger2("any finger", hReader, dpi,DPFJ_FMD_ISO_19794_2_2005, &pFeatures1, &nFeatures1Size);
+
+        unsigned int falsematch_rate = 0;
+        const unsigned int target_falsematch_rate = DPFJ_PROBABILITY_ONE / 100000; //target rate is 0.00001
+        long mseconds;
+        struct timeval tv1, tv2;
+        gettimeofday(&tv1, NULL);
+        int new_result = dpfj_compare(DPFJ_FMD_ISO_19794_2_2005, pFeatures1, nFeatures1Size, 0,
+            DPFJ_FMD_ISO_19794_2_2005, pFeatures2, fsize, 0,
+            &falsematch_rate);
+
+        gettimeofday(&tv2, NULL);
+        mseconds = (tv2.tv_sec - tv1.tv_sec) * 1000 + (tv2.tv_usec - tv1.tv_usec) / 1000; //time of operation in milliseconds
+        // show features in console
+        char buffer[512];
+        if(DPFJ_SUCCESS == result){
+            if(falsematch_rate < target_falsematch_rate){
+                printf("Fingerprints match.\n\n\n");
+                sprintf(buffer, "{\"message\": \"%s\", \"type\": \"true\" }", "match");
+            }
+            else{
+                printf("Fingerprints did not match.\n\n\n");
+                sprintf(buffer, "{\"message\": \"%s\", \"type\": \"true\"}", "not match");
+            }
+        }else{
+            sprintf(buffer, "{\"message\": \"%d\", \"type\": \"false\"}", "not connected");
+        }
+
+        response = MHD_create_response_from_buffer(strlen(buffer),
+                                        (void *) buffer,
+                                        MHD_RESPMEM_MUST_COPY);
+        dpfpdd_exit();
+        MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
+        MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type");
+        int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+        MHD_destroy_response(response);
+        return ret;
     }
 
     if (strcmp(url, "/connect") == 0) {
@@ -450,6 +670,49 @@ int main() {
    
 }
 
+// Función para codificar Base64 a  binarios
+char* base64_decode(const unsigned char* input, size_t length, size_t* output_length) {
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    *output_length = length / 4 * 3;
+    if (input[length - 1] == '=') {
+        (*output_length)--;
+    }
+    if (input[length - 2] == '=') {
+        (*output_length)--;
+    }
+
+    char* decoded_data = (char*)malloc(*output_length);
+    if (decoded_data == NULL) {
+        fprintf(stderr, "Error de asignación de memoria\n");
+        exit(EXIT_FAILURE);
+    }
+
+    size_t i, j;
+    for (i = 0, j = 0; i < length; i += 4, j += 3) {
+        uint32_t sextet_a = input[i] == '=' ? 0 & i++ : strchr(base64_chars, input[i]) - base64_chars;
+        uint32_t sextet_b = input[i] == '=' ? 0 & i++ : strchr(base64_chars, input[i]) - base64_chars;
+        uint32_t sextet_c = input[i] == '=' ? 0 & i++ : strchr(base64_chars, input[i]) - base64_chars;
+        uint32_t sextet_d = input[i] == '=' ? 0 & i++ : strchr(base64_chars, input[i]) - base64_chars;
+
+        uint32_t triple = (sextet_a << 18) + (sextet_b << 12) + (sextet_c << 6) + sextet_d;
+
+        if (j < *output_length) {
+            decoded_data[j] = (triple >> 16) & 0xFF;
+        }
+        if (j + 1 < *output_length) {
+            decoded_data[j + 1] = (triple >> 8) & 0xFF;
+        }
+        if (j + 2 < *output_length) {
+            decoded_data[j + 2] = triple & 0xFF;
+        }
+    }
+
+    return decoded_data;
+}
+
+
+
 // Función para codificar datos binarios a Base64
 char* base64_encode(const unsigned char* input, size_t length, size_t* output_length) {
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -499,3 +762,33 @@ unsigned char* read_file(const char* filename, size_t* length) {
     return content;
 }
 
+int read_current_index(){
+    FILE *f = fopen("index.txt", "r");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);  //same as rewind(f);
+
+    char *string = malloc(fsize + 1);
+    fread(string, fsize, 1, f);
+    fclose(f);
+
+    int index = atoi(string);
+    return index;
+}
+
+void increment_current_index(int index){
+    FILE *f = fopen("index.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+    fprintf(f, "%d", index);
+    fclose(f);
+}
