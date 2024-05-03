@@ -192,108 +192,23 @@ int request_handler(void *cls, struct MHD_Connection *connection,
                                 MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
                                 MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
                                 MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type");
-                
                 if(NULL != hReader){
                     result = dpfpdd_close(hReader);
                     hReader = NULL;
-                } 
-                
+                }
                 int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
                 MHD_destroy_response(response);
                 return ret;
-                dpfpdd_exit();  
-
-            } 
-            
+                dpfpdd_exit();
+            }
             if(NULL != pReaderInfo) free(pReaderInfo);
             pReaderInfo = NULL;
             nReaderCnt = 0;
         }
-        
     }
 
     if (strcmp(url, "/capture") == 0) {
         return capture_endpoint(connection, response);
-    }
-    
-    if (strcmp(url, "/compare") == 0) {
-        // read params of querystring for fingerprint
-        const char *index_str = MHD_lookup_connection_value(connection, MHD_GET_ARGUMENT_KIND, "index");
-        int index = atoi(index_str);
-        char* name[255];
-        sprintf(name, "fingers/fingerprint_%d.bin", index);
-        FILE *f = fopen(name, "w");
-        if (f == NULL)
-        {
-            printf("Error opening file!\n");
-            exit(1);
-        }
-
-        fseek(f, 0, SEEK_END);
-        long fsize = ftell(f);
-        fseek(f, 0, SEEK_SET);  //same as rewind(f);
-
-        unsigned char *pFeatures2 = malloc(fsize + 1);
-        fread(pFeatures2, fsize, 1, f);
-        fclose(f);
-
-        unsigned char* pFeatures1 = NULL;
-        unsigned int nFeatures1Size = 0;
-        unsigned int nFeatures2Size = 0;
-        DPFPDD_DEV hReader = NULL;
-        int dpi = 0;
-        int bStop = 0;
-        int result = dpfpdd_init();
-        char szReader[MAX_DEVICE_NAME_LENGTH];
-        sigset_t sigmask;
-        // Configuración de máscara de señales
-        sigfillset(&sigmask);
-        pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
-        // Configuración de localización
-        setlocale(LC_ALL, "");
-        strncpy(szReader, "", sizeof(szReader));
-
-        hReader = SelectAndOpenReader(szReader, sizeof(szReader),&dpi);
-
-        CaptureFinger2("any finger", hReader, dpi,DPFJ_FMD_ISO_19794_2_2005, &pFeatures1, &nFeatures1Size);
-
-        unsigned int falsematch_rate = 0;
-        const unsigned int target_falsematch_rate = DPFJ_PROBABILITY_ONE / 100000; //target rate is 0.00001
-        long mseconds;
-        struct timeval tv1, tv2;
-        gettimeofday(&tv1, NULL);
-        int new_result = dpfj_compare(DPFJ_FMD_ISO_19794_2_2005, pFeatures1, nFeatures1Size, 0,
-            DPFJ_FMD_ISO_19794_2_2005, pFeatures2, nFeatures2Size, 0,
-            &falsematch_rate);
-
-        gettimeofday(&tv2, NULL);
-        mseconds = (tv2.tv_sec - tv1.tv_sec) * 1000 + (tv2.tv_usec - tv1.tv_usec) / 1000; //time of operation in milliseconds
-        // show features in console
-        char buffer[512];
-        if(DPFJ_SUCCESS == result){
-            if(falsematch_rate < target_falsematch_rate){
-                printf("Fingerprints match.\n\n\n");
-                sprintf(buffer, "{\"message\": \"%s\", \"type\": \"true\" }", "match");
-            }
-            else{
-                printf("Fingerprints did not match.\n\n\n");
-                sprintf(buffer, "{\"message\": \"%s\", \"type\": \"true\"}", "not match");
-            }
-        }else{
-            sprintf(buffer, "{\"message\": \"%d\", \"type\": \"false\"}", "not connected");
-        }
-
-        response = MHD_create_response_from_buffer(strlen(buffer),
-                                        (void *) buffer,
-                                        MHD_RESPMEM_MUST_COPY);
-        dpfpdd_exit();
-        MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
-        MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type");
-        int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
-        MHD_destroy_response(response);
-        return ret;
-
     }
 
     if (strcmp(url, "/validate") == 0) {
@@ -384,7 +299,6 @@ int request_handler(void *cls, struct MHD_Connection *connection,
             // Selección del lector y obtención de sus capacidades
             int result2 = 0;
             int nChoice = 0;
-    
 
             // Si no se encuentra ningún lector de huellas
             if(0 == nReaderCnt) {
@@ -398,8 +312,7 @@ int request_handler(void *cls, struct MHD_Connection *connection,
                 if(NULL != hReader){
                     result = dpfpdd_close(hReader);
                     hReader = NULL;
-                } 
-                
+                }
                 int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
                 MHD_destroy_response(response);
                 return ret;
@@ -509,7 +422,6 @@ int request_handler(void *cls, struct MHD_Connection *connection,
             pReaderInfo = NULL;
             nReaderCnt = 0;
         }
-        
     }
 
     return MHD_NO;  // Página no encontrada
