@@ -37,6 +37,8 @@ unsigned char *read_file_fingerprint(const char* filename);
 unsigned char* read_file(const char* filename, size_t* length);
 // Función para manejar las solicitudes HTTP al enpoint /validate
 int validate_endpoint(const char *name, struct MHD_Connection *connection, struct MHD_Response *response);
+// Función para manejar las solicitudes HTTP al enpoint /capture
+int capture_endpoint(struct MHD_Connection *connection, struct MHD_Response *response);
 
 int request_handler2(void *cls, struct MHD_Connection *connection,
                      const char *url, const char *method,
@@ -211,59 +213,7 @@ int request_handler(void *cls, struct MHD_Connection *connection,
     }
 
     if (strcmp(url, "/capture") == 0) {
-        unsigned char* pFeatures1 = NULL;
-	    unsigned int nFeatures1Size = 0;
-        DPFPDD_DEV hReader = NULL;
-        int dpi = 0;
-        int bStop = 0;
-        int result = dpfpdd_init();
-        char szReader[MAX_DEVICE_NAME_LENGTH];
-        sigset_t sigmask;
-        // Configuración de máscara de señales
-        sigfillset(&sigmask);
-        pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
-        // Configuración de localización
-        setlocale(LC_ALL, "");
-        strncpy(szReader, "", sizeof(szReader));
-
-        hReader = SelectAndOpenReader(szReader, sizeof(szReader),&dpi);
-
-        CaptureFinger2("any finger", hReader, dpi,DPFJ_FMD_ISO_19794_2_2005, &pFeatures1, &nFeatures1Size);
-
-        // create bin file for save fingerprint (pFeatures1 and nFeatures1Size)
-        int index = read_current_index();
-
-        char input_file_name[512];
-        sprintf(input_file_name, "fingers/fingerprint_%d.bin", index);
-
-        FILE *f = fopen(input_file_name, "wb");
-        if (f == NULL)
-        {
-            printf("Error opening file!\n");
-            exit(1);
-        }
-
-        fwrite(pFeatures1, sizeof(char), nFeatures1Size, f);
-        fclose(f);
-        increment_current_index(index+1);
-        //content
-        size_t input_length;
-        unsigned char* input_content = read_file(input_file_name, &input_length);
-        size_t encoded_length;
-        char* encoded_content = base64_encode(input_content, input_length, &encoded_length);
-
-        char buffer[512];
-        sprintf(buffer, "{\"message\": \"success\", \"content\":\"%s\", \"index\":\"%d\" }", encoded_content, index);
-        response = MHD_create_response_from_buffer(strlen(buffer),
-                                        (void *) buffer,
-                                        MHD_RESPMEM_MUST_COPY);
-        dpfpdd_exit();
-        MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
-        MHD_add_response_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        MHD_add_response_header(response, "Access-Control-Allow-Headers", "Content-Type");
-        int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
-        MHD_destroy_response(response);
-        return ret;
+        return capture_endpoint(connection, response);
     }
     
     if (strcmp(url, "/compare") == 0) {
@@ -759,7 +709,6 @@ unsigned char *read_file_fingerprint(const char* filename){
 
 
 int validate_endpoint(const char *name, struct MHD_Connection *connection, struct MHD_Response *response) {
-    printf("%s.\n\n\n",name);
     size_t nFeatures1Size = 0;
     size_t nFeatures2Size = 0;
     unsigned char* pFeatures1;
@@ -807,6 +756,53 @@ int validate_endpoint(const char *name, struct MHD_Connection *connection, struc
     }else{
         sprintf(buffer, "{\"message\": \"%d\", \"type\": \"false\"}", "not connected");
     }
+    dpfpdd_exit();
+    return send_response(buffer, connection, response);
+}
+
+int capture_endpoint(struct MHD_Connection *connection, struct MHD_Response *response) {
+    unsigned char* pFeatures1 = NULL;
+    unsigned int nFeatures1Size = 0;
+    DPFPDD_DEV hReader = NULL;
+    int dpi = 0;
+    int bStop = 0;
+    int result = dpfpdd_init();
+    char szReader[MAX_DEVICE_NAME_LENGTH];
+    sigset_t sigmask;
+    // Configuración de máscara de señales
+    sigfillset(&sigmask);
+    pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
+    // Configuración de localización
+    setlocale(LC_ALL, "");
+    strncpy(szReader, "", sizeof(szReader));
+
+    hReader = SelectAndOpenReader(szReader, sizeof(szReader),&dpi);
+
+    CaptureFinger2("any finger", hReader, dpi,DPFJ_FMD_ISO_19794_2_2005, &pFeatures1, &nFeatures1Size);
+
+    // create bin file for save fingerprint (pFeatures1 and nFeatures1Size)
+    int index = read_current_index();
+
+    char input_file_name[512];
+    sprintf(input_file_name, "fingers/fingerprint_%d.bin", index);
+
+    FILE *f = fopen(input_file_name, "wb");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    fwrite(pFeatures1, sizeof(char), nFeatures1Size, f);
+    fclose(f);
+    increment_current_index(index+1);
+    //content
+    size_t input_length;
+    unsigned char* input_content = read_file(input_file_name, &input_length);
+    size_t encoded_length;
+    char* encoded_content = base64_encode(input_content, input_length, &encoded_length);
+    char buffer[512];
+    sprintf(buffer, "{\"message\": \"success\", \"content\":\"%s\", \"index\":\"%d\" }", encoded_content, index);
     dpfpdd_exit();
     return send_response(buffer, connection, response);
 }
