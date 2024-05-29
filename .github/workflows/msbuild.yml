@@ -1,0 +1,20 @@
+name: Compilación de Windows (MinGW)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Instalar compilador MinGW
+        run: |
+          choco install mingw-w64
+          set PATH=%PATH%;C:\MinGW\bin
+
+      - name: Compilar archivos C
+        run: gcc -o finger fingerprint_server.o fingerprint_capture.o fingerprint_selection.o -Wl,--no-as-needed -lpthread -lm -lc -ldl -ldpfpdd -ldpfj -lmicrohttpd
